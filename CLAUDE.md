@@ -23,6 +23,11 @@ docker compose run --rm scraper "crypto news" --channels 5
 dotnet run -- "QUERY" [OPTIONS]
 ```
 
+**Build only (no run):**
+```bash
+dotnet build
+```
+
 **Rebuild image after code changes:**
 ```bash
 docker compose build
@@ -48,7 +53,9 @@ Everything lives in `Program.cs` (top-level statements, single async flow):
 - Channel search — `client.Contacts_Search()` finds channels matching the query
 - `FetchChannelData()` — calls `Channels_GetFullChannel` for metadata, then `Messages_GetHistory` for posts (skips media-only posts with no text)
 - `FetchComments()` — calls `Messages_GetReplies` per post; resolves author usernames via `result.UserOrChat()`
-- `RpcException` with code 420 (FloodWait): per-channel retry once after sleeping; per-comment batch sleep then skip
+- `RetryAsync<T>()` — wraps all API calls; FloodWait (420) sleeps server-supplied seconds, other errors use exponential backoff (2s, 4s, 8s…), default 3 attempts
+- `FetchComments()` silently swallows `MSG_ID_INVALID` / `CHAT_ID_INVALID` — these mean a post has no comment section, not a bug
+- `ApiThrottle` — 500ms fixed delay injected between every API call to stay under rate limits
 
 Output is written as a single indented JSON to `--output` (default `data/results.json`). The `data/` directory is Docker-volume-mounted so session and output files persist on the host.
 
