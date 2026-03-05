@@ -41,7 +41,8 @@ for (int i = 1; i < args.Length; i++)
     }
 }
 
-static void Log(string msg) => Console.Error.WriteLine(msg);
+static void Log(string msg) =>
+    Console.Error.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] {msg}");
 
 static string Prompt(string text)
 {
@@ -53,6 +54,36 @@ static int ParseFloodWait(string message)
 {
     var parts = message.Split('_');
     return int.TryParse(parts[^1], out var s) ? s : 30;
+}
+
+// Delay between API requests to avoid rate-limit bans
+TimeSpan ApiThrottle = TimeSpan.FromMilliseconds(500);
+
+// Retry with exponential backoff; FloodWait uses server-supplied delay.
+// shouldRetry: return false to let the exception propagate immediately without retrying.
+static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAttempts = 3,
+    Func<Exception, bool>? shouldRetry = null)
+{
+    for (int attempt = 1; ; attempt++)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (RpcException ex) when (ex.Code == 420)
+        {
+            int secs = ParseFloodWait(ex.Message);
+            Log($"[{ctx}] FloodWait: sleeping {secs}s (attempt {attempt}/{maxAttempts})");
+            if (attempt >= maxAttempts) throw;
+            await Task.Delay(secs * 1000);
+        }
+        catch (Exception ex) when (attempt < maxAttempts && (shouldRetry == null || shouldRetry(ex)))
+        {
+            int delaySecs = (int)Math.Pow(2, attempt); // 2s, 4s, 8s...
+            Log($"[{ctx}] {ex.GetType().Name}: {ex.Message} — retry in {delaySecs}s (attempt {attempt}/{maxAttempts})");
+            await Task.Delay(delaySecs * 1000);
+        }
+    }
 }
 
 string sessionPath = Path.Combine(dataDir, "tg_scraper.session");
@@ -73,7 +104,10 @@ await client.LoginUserIfNeeded();
 Log($"Authenticated. Starting scrape for: '{query}'");
 Log($"Searching for channels matching '{query}'...");
 
-var searchResult = await client.Contacts_Search(query, maxChannels);
+var searchResult = await RetryAsync(
+    () => client.Contacts_Search(query, maxChannels),
+    "Contacts_Search");
+
 var channels = searchResult.results
     .OfType<PeerChannel>()
     .Select(p => searchResult.chats.GetValueOrDefault(p.channel_id) as Channel)
@@ -95,33 +129,26 @@ for (int i = 0; i < channels.Count; i++)
 {
     var channel = channels[i];
     Log($"[{i + 1}/{channels.Count}] Scraping: {channel.title}");
+    if (i > 0) await Task.Delay(ApiThrottle);
     try
     {
-        outputChannels.Add(await FetchChannelData(client, channel, maxPosts, maxComments));
-    }
-    catch (RpcException ex) when (ex.Code == 420)
-    {
-        var secs = ParseFloodWait(ex.Message);
-        Log($"  FloodWait: sleeping {secs}s then retrying...");
-        await Task.Delay(secs * 1000);
-        try
-        {
-            outputChannels.Add(await FetchChannelData(client, channel, maxPosts, maxComments));
-        }
-        catch (Exception retryEx)
-        {
-            Log($"  Failed after retry: {retryEx.Message}");
-        }
+        outputChannels.Add(await RetryAsync(
+            () => FetchChannelData(client, channel, maxPosts, maxComments),
+            $"channel:{channel.title}"));
     }
     catch (Exception ex)
     {
-        Log($"  Skipping due to error: {ex.Message}");
+        Log($"  [{channel.title}] Failed after retries: {ex.GetType().Name}: {ex.Message}");
     }
 }
 
 var outDir = Path.GetDirectoryName(Path.GetFullPath(outputFile));
 if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
-await File.WriteAllTextAsync(outputFile, output.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+await File.WriteAllTextAsync(outputFile, output.ToJsonString(new JsonSerializerOptions
+{
+    WriteIndented = true,
+    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+}));
 
 Log($"Done. Results written to {outputFile}");
 return 0;
@@ -130,8 +157,12 @@ return 0;
 
 async Task<JsonObject> FetchChannelData(Client client, Channel channel, int maxPosts, int maxComments)
 {
-    var fullInfo = await client.Channels_GetFullChannel(channel);
+    var fullInfo = await RetryAsync(
+        () => client.Channels_GetFullChannel(channel),
+        $"GetFullChannel:{channel.title}");
     var fullChat = (ChannelFull)fullInfo.full_chat;
+
+    await Task.Delay(ApiThrottle);
 
     var channelNode = new JsonObject
     {
@@ -146,21 +177,25 @@ async Task<JsonObject> FetchChannelData(Client client, Channel channel, int maxP
 
     Log($"  Fetching up to {maxPosts} posts from @{channel.username ?? channel.id.ToString()}...");
 
-    var history = await client.Messages_GetHistory(channel.ToInputPeer(), limit: maxPosts);
+    var history = await RetryAsync(
+        () => client.Messages_GetHistory(channel.ToInputPeer(), limit: maxPosts),
+        $"GetHistory:{channel.title}");
+
     foreach (var msgBase in history.Messages.OfType<Message>())
     {
         if (string.IsNullOrEmpty(msgBase.message)) continue;
 
         Log($"    Post {msgBase.id}: fetching comments...");
+        await Task.Delay(ApiThrottle);
         posts.Add(new JsonObject
         {
-            ["id"]            = msgBase.id,
-            ["date"]          = msgBase.date.ToUniversalTime().ToString("O"),
-            ["text"]          = msgBase.message,
-            ["views"]         = msgBase.views,
-            ["forwards"]      = msgBase.forwards,
+            ["id"]             = msgBase.id,
+            ["date"]           = msgBase.date.ToUniversalTime().ToString("O"),
+            ["text"]           = msgBase.message,
+            ["views"]          = msgBase.views,
+            ["forwards"]       = msgBase.forwards,
             ["comments_count"] = msgBase.replies?.replies ?? 0,
-            ["comments"]      = await FetchComments(client, channel.ToInputPeer(), msgBase.id, maxComments)
+            ["comments"]       = await FetchComments(client, channel.ToInputPeer(), msgBase.id, maxComments)
         });
     }
 
@@ -170,16 +205,23 @@ async Task<JsonObject> FetchChannelData(Client client, Channel channel, int maxP
 async Task<JsonArray> FetchComments(Client client, InputPeer peer, int msgId, int limit)
 {
     var arr = new JsonArray();
+    // These errors mean the post has no comment section — expected, not worth retrying.
+    static bool IsTransient(Exception ex) =>
+        ex is not RpcException rpc || rpc.Message is not ("MSG_ID_INVALID" or "CHAT_ID_INVALID" or "PEER_ID_INVALID");
+
     try
     {
-        Messages_MessagesBase result = await client.Messages_GetReplies(peer, msgId, limit: limit);
+        var result = await RetryAsync(
+            () => client.Messages_GetReplies(peer, msgId, limit: limit),
+            $"GetReplies:{msgId}",
+            shouldRetry: IsTransient);
+
         foreach (var msgBase in result.Messages.OfType<Message>())
         {
             string? author = null;
             if (msgBase.from_id != null)
-            {
                 author = (result.UserOrChat(msgBase.from_id) as User)?.username;
-            }
+
             arr.Add(new JsonObject
             {
                 ["id"]     = msgBase.id,
@@ -190,11 +232,9 @@ async Task<JsonArray> FetchComments(Client client, InputPeer peer, int msgId, in
         }
     }
     catch (RpcException ex) when (ex.Message is "MSG_ID_INVALID" or "CHAT_ID_INVALID") { }
-    catch (RpcException ex) when (ex.Code == 420)
+    catch (Exception ex)
     {
-        var secs = ParseFloodWait(ex.Message);
-        Log($"    FloodWait on comments: sleeping {secs}s");
-        await Task.Delay(secs * 1000);
+        Log($"    [GetReplies:{msgId}] {ex.GetType().Name}: {ex.Message}");
     }
     return arr;
 }
