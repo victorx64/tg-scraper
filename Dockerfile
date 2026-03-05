@@ -1,13 +1,16 @@
-FROM python:3.12-slim
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+COPY scraper.csproj .
+RUN dotnet restore -r linux-x64
+COPY Program.cs .
+RUN dotnet publish -c Release -r linux-x64 --self-contained true \
+    -p:PublishSingleFile=true -o /app
 
+FROM mcr.microsoft.com/dotnet/runtime-deps:9.0
 WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY scraper.py .
+COPY --from=build /app/scraper .
 
 # Session file and output JSONs go here (mount as volume)
 VOLUME ["/data"]
 
-ENTRYPOINT ["python", "scraper.py"]
+ENTRYPOINT ["/app/scraper"]

@@ -2,13 +2,13 @@
 
 CLI tool that searches Telegram channels by query string and scrapes posts + comments to JSON.
 
-Uses [Telethon](https://github.com/LonamiWebs/Telethon) (MTProto API) — real API access, not web scraping.
+Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real API access, not web scraping.
 
 ## Prerequisites
 
 - A Telegram account
 - API credentials from [my.telegram.org/apps](https://my.telegram.org/apps)
-- Docker (recommended) **or** Python 3.8+
+- Docker (recommended) **or** .NET 9 SDK
 
 ## Configuration
 
@@ -28,17 +28,15 @@ PHONE=+79001234567
 
 ## Running with Docker (recommended)
 
-No Python installation required on the host.
-
 **First run** — requires interactive TTY to enter the SMS code:
 
 ```bash
 docker compose run --rm -it scraper "machine learning" --channels 2 --posts 5
 ```
 
-Telethon will prompt:
+The scraper will prompt:
 ```
-Please enter the code you received: _
+Telegram verification code: _
 ```
 
 After entering the code, the session is saved to `./data/tg_scraper.session`.
@@ -62,8 +60,7 @@ docker compose build
 ## Running without Docker
 
 ```bash
-pip install -r requirements.txt
-python scraper.py "QUERY" [OPTIONS]
+dotnet run -- "QUERY" [OPTIONS]
 ```
 
 Session file is saved as `tg_scraper.session` in the current directory.

@@ -2,3 +2,5 @@
 *.session
 data/
 __pycache__/
+bin/
+obj/
