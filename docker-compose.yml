@@ -1,0 +1,10 @@
+services:
+  scraper:
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    # No default command — pass query and flags at runtime:
+    # docker compose run --rm scraper "query" --channels 3
