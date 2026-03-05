@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DotNetEnv;
@@ -120,7 +121,7 @@ for (int i = 0; i < channels.Count; i++)
 
 var outDir = Path.GetDirectoryName(Path.GetFullPath(outputFile));
 if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
-await File.WriteAllTextAsync(outputFile, output.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+await File.WriteAllTextAsync(outputFile, output.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
 
 Log($"Done. Results written to {outputFile}");
 return 0;
