@@ -9,6 +9,7 @@ Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) â
 - A Telegram account
 - API credentials from [my.telegram.org/apps](https://my.telegram.org/apps)
 - Docker (recommended) **or** .NET 9 SDK
+- **ARM64 architecture** (Apple Silicon / linux/arm64) â€” the Docker image is built for `linux-arm64`; x86_64 hosts are not supported
 
 ## Configuration
 

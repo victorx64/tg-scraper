@@ -1,9 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 COPY scraper.csproj .
-RUN dotnet restore -r linux-x64
+RUN dotnet restore -r linux-arm64
 COPY Program.cs .
-RUN dotnet publish -c Release -r linux-x64 --self-contained true \
+RUN dotnet publish -c Release -r linux-arm64 --self-contained true \
     -p:PublishSingleFile=true -o /app
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:9.0
