@@ -16,24 +16,43 @@ var dataDir = Environment.GetEnvironmentVariable("DATA_DIR") ?? ".";
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.Error.WriteLine("Usage: scraper <query> [--channels N] [--posts N] [--output FILE]");
+    Console.Error.WriteLine("Usage: scraper --file CHANNELS_FILE [--posts N] [--output FILE]");
+    Console.Error.WriteLine("  CHANNELS_FILE: one channel link per line (t.me/x, @x, or x)");
     return 1;
 }
 
-string query      = args[0];
-int maxChannels   = 5;
-int maxPosts      = 200;
-string outputFile = Path.Combine(dataDir, "results.csv");
+string? channelsFile = null;
+int maxPosts         = 200;
+string outputFile    = Path.Combine(dataDir, "results.csv");
 
-for (int i = 1; i < args.Length; i++)
+for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
     {
-        case "--channels": maxChannels = int.Parse(args[++i]); break;
-        case "--posts":    maxPosts    = int.Parse(args[++i]); break;
-        case "--output":   outputFile  = args[++i]; break;
+        case "--file":   channelsFile = args[++i]; break;
+        case "--posts":  maxPosts     = int.Parse(args[++i]); break;
+        case "--output": outputFile   = args[++i]; break;
     }
 }
+
+if (channelsFile == null)
+{
+    Console.Error.WriteLine("Error: --file is required.");
+    return 1;
+}
+
+if (!File.Exists(channelsFile))
+{
+    Console.Error.WriteLine($"Error: file not found: {channelsFile}");
+    return 1;
+}
+
+var channelUsernames = File.ReadAllLines(channelsFile)
+    .Select(line => line.Trim())
+    .Where(line => !string.IsNullOrEmpty(line) && !line.StartsWith('#'))
+    .Select(ParseUsername)
+    .OfType<string>()
+    .ToList();
 
 static void Log(string msg) =>
     Console.Error.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] {msg}");
@@ -95,21 +114,34 @@ string? Config(string what) => what switch
 using var client = new Client(Config);
 await client.LoginUserIfNeeded();
 
-Log($"Authenticated. Starting scrape for: '{query}'");
-Log($"Searching for channels matching '{query}'...");
+Log($"Authenticated. Resolving {channelUsernames.Count} channel(s) from {channelsFile}...");
 
-var searchResult = await RetryAsync(
-    () => client.Contacts_Search(query, maxChannels),
-    "Contacts_Search");
+var channels = new List<Channel>();
+foreach (var username in channelUsernames)
+{
+    try
+    {
+        await Task.Delay(ApiThrottle);
+        var resolved = await RetryAsync(
+            () => client.Contacts_ResolveUsername(username),
+            $"ResolveUsername:{username}");
+        if (resolved.Chat is Channel ch)
+        {
+            channels.Add(ch);
+            Log($"  Resolved @{username} → {ch.title}");
+        }
+        else
+        {
+            Log($"  @{username} is not a channel, skipping.");
+        }
+    }
+    catch (Exception ex)
+    {
+        Log($"  Failed to resolve @{username}: {ex.Message}");
+    }
+}
 
-var channels = searchResult.results
-    .OfType<PeerChannel>()
-    .Select(p => searchResult.chats.GetValueOrDefault(p.channel_id) as Channel)
-    .OfType<Channel>()
-    .Take(maxChannels)
-    .ToList();
-
-Log($"Found {channels.Count} channel(s).");
+Log($"Resolved {channels.Count} channel(s).");
 
 var rows = new List<ChannelStats>();
 
@@ -144,6 +176,19 @@ Log($"Done. Results written to {outputFile}");
 return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// Extracts username from t.me/x, https://t.me/x, @x, or plain x
+static string? ParseUsername(string line)
+{
+    // Strip URL prefix
+    var s = line;
+    if (s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) s = s["https://".Length..];
+    if (s.StartsWith("http://",  StringComparison.OrdinalIgnoreCase)) s = s["http://".Length..];
+    if (s.StartsWith("t.me/",    StringComparison.OrdinalIgnoreCase)) s = s["t.me/".Length..];
+    // Strip leading @
+    s = s.TrimStart('@').Trim();
+    return string.IsNullOrEmpty(s) ? null : s;
+}
 
 static string CsvCell(string value) =>
     value.Contains(',') || value.Contains('"') || value.Contains('\n')

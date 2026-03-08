@@ -1,6 +1,6 @@
 # tg-scraper
 
-CLI tool that searches Telegram channels by query string and outputs per-channel engagement statistics to CSV.
+CLI tool that scrapes Telegram channels from a list and outputs per-channel engagement statistics to CSV.
 
 Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real API access, not web scraping.
 
@@ -27,12 +27,26 @@ PHONE=+79001234567
 
 ---
 
+## Channel list file
+
+Create a text file with one channel per line. Supported formats:
+
+```
+# comments are ignored
+https://t.me/durov
+t.me/telegram
+@channel_username
+plain_username
+```
+
+---
+
 ## Running with Docker (recommended)
 
 **First run** — requires interactive TTY to enter the SMS code:
 
 ```bash
-docker compose run --rm -it scraper "machine learning" --channels 2 --posts 50
+docker compose run --rm -it scraper --file /data/channels.txt --posts 50
 ```
 
 The scraper will prompt:
@@ -45,7 +59,7 @@ After entering the code, the session is saved to `./data/tg_scraper.session`.
 **Subsequent runs** — no interaction needed:
 
 ```bash
-docker compose run --rm scraper "crypto news" --channels 5
+docker compose run --rm scraper --file /data/channels.txt
 ```
 
 Results are written to `./data/results.csv`.
@@ -61,7 +75,7 @@ docker compose build
 ## Running without Docker
 
 ```bash
-dotnet run -- "QUERY" [OPTIONS]
+dotnet run -- --file channels.txt [OPTIONS]
 ```
 
 Session file is saved as `tg_scraper.session` in the current directory.
@@ -72,16 +86,16 @@ Session file is saved as `tg_scraper.session` in the current directory.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--channels N` | 5 | Max number of channels to scrape |
+| `--file FILE` | *(required)* | Path to file with channel links (one per line) |
 | `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
 | `--output FILE` | `data/results.csv` | Output file path |
 
 **Examples:**
 
 ```bash
-docker compose run --rm scraper "machine learning"
-docker compose run --rm scraper "politics" --channels 10 --posts 500
-docker compose run --rm scraper "tech" --output /data/tech.csv
+docker compose run --rm scraper --file /data/channels.txt
+docker compose run --rm scraper --file /data/channels.txt --posts 500
+docker compose run --rm scraper --file /data/channels.txt --output /data/report.csv
 ```
 
 ---
