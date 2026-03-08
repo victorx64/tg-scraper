@@ -1,6 +1,6 @@
 # tg-scraper
 
-CLI tool that searches Telegram channels by query string and outputs per-channel engagement statistics to JSON.
+CLI tool that searches Telegram channels by query string and outputs per-channel engagement statistics to CSV.
 
 Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real API access, not web scraping.
 
@@ -48,7 +48,7 @@ After entering the code, the session is saved to `./data/tg_scraper.session`.
 docker compose run --rm scraper "crypto news" --channels 5
 ```
 
-Results are written to `./data/results.json`.
+Results are written to `./data/results.csv`.
 
 **Rebuild image** after code changes:
 
@@ -74,39 +74,25 @@ Session file is saved as `tg_scraper.session` in the current directory.
 |------|---------|-------------|
 | `--channels N` | 5 | Max number of channels to scrape |
 | `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
-| `--output FILE` | `data/results.json` | Output file path |
+| `--output FILE` | `data/results.csv` | Output file path |
 
 **Examples:**
 
 ```bash
 docker compose run --rm scraper "machine learning"
 docker compose run --rm scraper "politics" --channels 10 --posts 500
-docker compose run --rm scraper "tech" --output /data/tech.json
+docker compose run --rm scraper "tech" --output /data/tech.csv
 ```
 
 ---
 
 ## Output Format
 
-```json
-{
-  "query": "machine learning",
-  "scraped_at": "2026-03-05T12:00:00+00:00",
-  "channels": [
-    {
-      "id": 1234567890,
-      "username": "channel_username",
-      "title": "Channel Title",
-      "subscribers": 50000,
-      "posts_analyzed": 87,
-      "avg_reach_pct": 142.3,
-      "avg_reach_first_day_pct": 118.7,
-      "avg_forwards": 12.4,
-      "avg_comments": 5.1,
-      "avg_reactions": 38.9
-    }
-  ]
-}
+UTF-8 CSV with a header row, one row per channel:
+
+```
+id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_reach_first_day_pct,avg_forwards,avg_comments,avg_reactions
+1234567890,channel_username,Channel Title,50000,87,142.3,118.7,12.4,5.1,38.9
 ```
 
 ### Fields

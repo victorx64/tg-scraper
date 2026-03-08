@@ -1,11 +1,7 @@
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Text.Json.Nodes;
+using System.Text;
 using DotNetEnv;
 using TL;
 using WTelegram;
-using JsonArray = System.Text.Json.Nodes.JsonArray;
-using JsonObject = System.Text.Json.Nodes.JsonObject;
 
 // Suppress WTelegramClient internal noise
 Helpers.Log = (_, _) => { };
@@ -27,7 +23,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help")
 string query      = args[0];
 int maxChannels   = 5;
 int maxPosts      = 200;
-string outputFile = Path.Combine(dataDir, "results.json");
+string outputFile = Path.Combine(dataDir, "results.csv");
 
 for (int i = 1; i < args.Length; i++)
 {
@@ -115,13 +111,7 @@ var channels = searchResult.results
 
 Log($"Found {channels.Count} channel(s).");
 
-var output = new JsonObject
-{
-    ["query"]      = query,
-    ["scraped_at"] = DateTime.UtcNow.ToString("O"),
-    ["channels"]   = new JsonArray()
-};
-var outputChannels = output["channels"]!.AsArray();
+var rows = new List<ChannelStats>();
 
 for (int i = 0; i < channels.Count; i++)
 {
@@ -130,7 +120,7 @@ for (int i = 0; i < channels.Count; i++)
     if (i > 0) await Task.Delay(ApiThrottle);
     try
     {
-        outputChannels.Add(await RetryAsync(
+        rows.Add(await RetryAsync(
             () => FetchChannelStats(client, channel, maxPosts),
             $"channel:{channel.title}"));
     }
@@ -142,20 +132,27 @@ for (int i = 0; i < channels.Count; i++)
 
 var outDir = Path.GetDirectoryName(Path.GetFullPath(outputFile));
 if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
-await File.WriteAllTextAsync(outputFile, output.ToJsonString(new JsonSerializerOptions
-{
-    WriteIndented = true,
-    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-}));
+
+var csv = new StringBuilder();
+csv.AppendLine("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_reach_first_day_pct,avg_forwards,avg_comments,avg_reactions");
+foreach (var r in rows)
+    csv.AppendLine($"{r.Id},{CsvCell(r.Username ?? "")},{CsvCell(r.Title)},{r.Subscribers},{r.PostsAnalyzed},{r.AvgReachPct},{r.AvgReachFirstDayPct},{r.AvgForwards},{r.AvgComments},{r.AvgReactions}");
+
+await File.WriteAllTextAsync(outputFile, csv.ToString(), Encoding.UTF8);
 
 Log($"Done. Results written to {outputFile}");
 return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+static string CsvCell(string value) =>
+    value.Contains(',') || value.Contains('"') || value.Contains('\n')
+        ? $"\"{value.Replace("\"", "\"\"")}\""
+        : value;
+
 static int ReactionCount(ReactionCount r) => r.count;
 
-async Task<JsonObject> FetchChannelStats(Client client, Channel channel, int maxPosts)
+async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int maxPosts)
 {
     var fullInfo = await RetryAsync(
         () => client.Channels_GetFullChannel(channel),
@@ -222,17 +219,20 @@ async Task<JsonObject> FetchChannelStats(Client client, Channel channel, int max
         avgReactions = posts.Sum(p => p.reactions?.results?.Sum(ReactionCount) ?? 0) / (double)posts.Count;
     }
 
-    return new JsonObject
-    {
-        ["id"]                      = channel.id,
-        ["username"]                = channel.username,
-        ["title"]                   = channel.title,
-        ["subscribers"]             = subscribers,
-        ["posts_analyzed"]          = posts.Count,
-        ["avg_reach_pct"]           = Math.Round(avgReachPct, 1),
-        ["avg_reach_first_day_pct"] = Math.Round(avgReachFirstDayPct, 1),
-        ["avg_forwards"]            = Math.Round(avgForwards, 1),
-        ["avg_comments"]            = Math.Round(avgComments, 1),
-        ["avg_reactions"]           = Math.Round(avgReactions, 1),
-    };
+    return new ChannelStats(
+        channel.id,
+        channel.username,
+        channel.title,
+        subscribers,
+        posts.Count,
+        Math.Round(avgReachPct, 1),
+        Math.Round(avgReachFirstDayPct, 1),
+        Math.Round(avgForwards, 1),
+        Math.Round(avgComments, 1),
+        Math.Round(avgReactions, 1));
 }
+
+record ChannelStats(
+    long Id, string? Username, string Title, long Subscribers,
+    int PostsAnalyzed, double AvgReachPct, double AvgReachFirstDayPct,
+    double AvgForwards, double AvgComments, double AvgReactions);

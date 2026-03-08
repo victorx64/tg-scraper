@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single-file CLI tool (`Program.cs`) that searches Telegram channels by query string and outputs per-channel engagement statistics to JSON. Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real Telegram API access, not web scraping. Written in C# targeting .NET 9.
+A single-file CLI tool (`Program.cs`) that searches Telegram channels by query string and outputs per-channel engagement statistics to CSV. Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real Telegram API access, not web scraping. Written in C# targeting .NET 9.
 
 ## Running
 
@@ -43,7 +43,7 @@ Copy `.env.example` to `.env` and set `API_ID`, `API_HASH`, `PHONE`. Credentials
 |------|---------|-------------|
 | `--channels N` | 5 | Max channels to scrape |
 | `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
-| `--output FILE` | `data/results.json` | Output path |
+| `--output FILE` | `data/results.csv` | Output path |
 
 ## Architecture
 
@@ -66,7 +66,7 @@ Everything lives in `Program.cs` (top-level statements, single async flow):
 | `avg_comments` | Avg comment count per post |
 | `avg_reactions` | Avg total reactions per post |
 
-Output is written as a single indented JSON to `--output` (default `data/results.json`). The `data/` directory is Docker-volume-mounted so session and output files persist on the host.
+Output is written as UTF-8 CSV to `--output` (default `data/results.csv`). The `data/` directory is Docker-volume-mounted so session and output files persist on the host.
 
 `DATA_DIR` env var controls where the session file and default output are written (set to `/data` in Docker, `.` locally).
 
