@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single-file CLI tool (`Program.cs`) that searches Telegram channels by query string and scrapes posts + comments to JSON. Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real Telegram API access, not web scraping. Written in C# targeting .NET 9.
+A single-file CLI tool (`Program.cs`) that searches Telegram channels by query string and outputs per-channel engagement statistics to JSON. Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real Telegram API access, not web scraping. Written in C# targeting .NET 9.
 
 ## Running
 
@@ -42,8 +42,7 @@ Copy `.env.example` to `.env` and set `API_ID`, `API_HASH`, `PHONE`. Credentials
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--channels N` | 5 | Max channels to scrape |
-| `--posts N` | 50 | Max posts per channel |
-| `--comments N` | 100 | Max comments per post |
+| `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
 | `--output FILE` | `data/results.json` | Output path |
 
 ## Architecture
@@ -51,11 +50,21 @@ Copy `.env.example` to `.env` and set `API_ID`, `API_HASH`, `PHONE`. Credentials
 Everything lives in `Program.cs` (top-level statements, single async flow):
 
 - Channel search — `client.Contacts_Search()` finds channels matching the query
-- `FetchChannelData()` — calls `Channels_GetFullChannel` for metadata, then `Messages_GetHistory` for posts (skips media-only posts with no text)
-- `FetchComments()` — calls `Messages_GetReplies` per post; resolves author usernames via `result.UserOrChat()`
+- `FetchChannelStats()` — calls `Channels_GetFullChannel` for metadata (subscriber count), then paginates `Messages_GetHistory` collecting posts from the last 30 days (up to `--posts`); computes per-channel stats
 - `RetryAsync<T>()` — wraps all API calls; FloodWait (420) sleeps server-supplied seconds, other errors use exponential backoff (2s, 4s, 8s…), default 3 attempts
-- `FetchComments()` silently swallows `MSG_ID_INVALID` / `CHAT_ID_INVALID` — these mean a post has no comment section, not a bug
 - `ApiThrottle` — 500ms fixed delay injected between every API call to stay under rate limits
+
+### Output fields per channel
+
+| Field | Description |
+|-------|-------------|
+| `subscribers` | Total subscriber count |
+| `posts_analyzed` | Number of posts collected (last 30 days) |
+| `avg_reach_pct` | Avg views / subscribers × 100 (can exceed 100% via sharing) |
+| `avg_reach_first_day_pct` | Same ratio but only for posts 24–72 h old (proxy for first-day views; falls back to all posts > 24 h if fewer than 3 in that window) |
+| `avg_forwards` | Avg forwards per post |
+| `avg_comments` | Avg comment count per post |
+| `avg_reactions` | Avg total reactions per post |
 
 Output is written as a single indented JSON to `--output` (default `data/results.json`). The `data/` directory is Docker-volume-mounted so session and output files persist on the host.
 

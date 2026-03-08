@@ -20,15 +20,14 @@ var dataDir = Environment.GetEnvironmentVariable("DATA_DIR") ?? ".";
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.Error.WriteLine("Usage: scraper <query> [--channels N] [--posts N] [--comments N] [--output FILE]");
+    Console.Error.WriteLine("Usage: scraper <query> [--channels N] [--posts N] [--output FILE]");
     return 1;
 }
 
-string query       = args[0];
-int maxChannels    = 5;
-int maxPosts       = 50;
-int maxComments    = 100;
-string outputFile  = Path.Combine(dataDir, "results.json");
+string query      = args[0];
+int maxChannels   = 5;
+int maxPosts      = 200;
+string outputFile = Path.Combine(dataDir, "results.json");
 
 for (int i = 1; i < args.Length; i++)
 {
@@ -36,7 +35,6 @@ for (int i = 1; i < args.Length; i++)
     {
         case "--channels": maxChannels = int.Parse(args[++i]); break;
         case "--posts":    maxPosts    = int.Parse(args[++i]); break;
-        case "--comments": maxComments = int.Parse(args[++i]); break;
         case "--output":   outputFile  = args[++i]; break;
     }
 }
@@ -133,7 +131,7 @@ for (int i = 0; i < channels.Count; i++)
     try
     {
         outputChannels.Add(await RetryAsync(
-            () => FetchChannelData(client, channel, maxPosts, maxComments),
+            () => FetchChannelStats(client, channel, maxPosts),
             $"channel:{channel.title}"));
     }
     catch (Exception ex)
@@ -155,86 +153,86 @@ return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async Task<JsonObject> FetchChannelData(Client client, Channel channel, int maxPosts, int maxComments)
+static int ReactionCount(ReactionCount r) => r.count;
+
+async Task<JsonObject> FetchChannelStats(Client client, Channel channel, int maxPosts)
 {
     var fullInfo = await RetryAsync(
         () => client.Channels_GetFullChannel(channel),
         $"GetFullChannel:{channel.title}");
     var fullChat = (ChannelFull)fullInfo.full_chat;
+    long subscribers = fullChat.participants_count;
 
     await Task.Delay(ApiThrottle);
 
-    var channelNode = new JsonObject
+    Log($"  Fetching posts (last 30 days) from @{channel.username ?? channel.id.ToString()}...");
+
+    var cutoff    = DateTime.UtcNow.AddDays(-30);
+    var oneDayAgo = DateTime.UtcNow.AddDays(-1);
+
+    // Collect posts within 30-day window, paginating as needed
+    var posts = new List<Message>();
+    int offsetId = 0;
+
+    while (posts.Count < maxPosts)
     {
-        ["id"]            = channel.id,
-        ["username"]      = channel.username,
-        ["title"]         = channel.title,
-        ["description"]   = fullChat.about ?? "",
-        ["members_count"] = fullChat.participants_count,
-        ["posts"]         = new JsonArray()
-    };
-    var posts = channelNode["posts"]!.AsArray();
+        var batch = await RetryAsync(
+            () => client.Messages_GetHistory(channel.ToInputPeer(), offset_id: offsetId, limit: 100),
+            $"GetHistory:{channel.title}");
 
-    Log($"  Fetching up to {maxPosts} posts from @{channel.username ?? channel.id.ToString()}...");
+        var msgs = batch.Messages.OfType<Message>().ToList();
+        if (msgs.Count == 0) break;
 
-    var history = await RetryAsync(
-        () => client.Messages_GetHistory(channel.ToInputPeer(), limit: maxPosts),
-        $"GetHistory:{channel.title}");
-
-    foreach (var msgBase in history.Messages.OfType<Message>())
-    {
-        if (string.IsNullOrEmpty(msgBase.message)) continue;
-
-        Log($"    Post {msgBase.id}: fetching comments...");
-        await Task.Delay(ApiThrottle);
-        posts.Add(new JsonObject
+        bool reachedCutoff = false;
+        foreach (var msg in msgs)
         {
-            ["id"]             = msgBase.id,
-            ["date"]           = msgBase.date.ToUniversalTime().ToString("O"),
-            ["text"]           = msgBase.message,
-            ["views"]          = msgBase.views,
-            ["forwards"]       = msgBase.forwards,
-            ["comments_count"] = msgBase.replies?.replies ?? 0,
-            ["comments"]       = await FetchComments(client, channel.ToInputPeer(), msgBase.id, maxComments)
-        });
-    }
-
-    return channelNode;
-}
-
-async Task<JsonArray> FetchComments(Client client, InputPeer peer, int msgId, int limit)
-{
-    var arr = new JsonArray();
-    // These errors mean the post has no comment section — expected, not worth retrying.
-    static bool IsTransient(Exception ex) =>
-        ex is not RpcException rpc || rpc.Message is not ("MSG_ID_INVALID" or "CHAT_ID_INVALID" or "PEER_ID_INVALID");
-
-    try
-    {
-        var result = await RetryAsync(
-            () => client.Messages_GetReplies(peer, msgId, limit: limit),
-            $"GetReplies:{msgId}",
-            shouldRetry: IsTransient);
-
-        foreach (var msgBase in result.Messages.OfType<Message>())
-        {
-            string? author = null;
-            if (msgBase.from_id != null)
-                author = (result.UserOrChat(msgBase.from_id) as User)?.username;
-
-            arr.Add(new JsonObject
-            {
-                ["id"]     = msgBase.id,
-                ["date"]   = msgBase.date.ToUniversalTime().ToString("O"),
-                ["text"]   = msgBase.message ?? "",
-                ["author"] = author
-            });
+            if (msg.date.ToUniversalTime() < cutoff) { reachedCutoff = true; break; }
+            posts.Add(msg);
         }
+
+        if (reachedCutoff || posts.Count >= maxPosts) break;
+        offsetId = msgs[^1].id;
+        await Task.Delay(ApiThrottle);
     }
-    catch (RpcException ex) when (ex.Message is "MSG_ID_INVALID" or "CHAT_ID_INVALID") { }
-    catch (Exception ex)
+
+    Log($"  Loaded {posts.Count} post(s) for @{channel.username ?? channel.id.ToString()}.");
+
+    double avgReachPct = 0, avgReachFirstDayPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0;
+
+    if (posts.Count > 0)
     {
-        Log($"    [GetReplies:{msgId}] {ex.GetType().Name}: {ex.Message}");
+        avgReachPct = subscribers > 0
+            ? posts.Average(p => (double)p.views) / subscribers * 100
+            : 0;
+
+        // First-day reach proxy: posts that are 24-72h old have views ≈ day-1 views
+        // (most Telegram views accumulate within the first day).
+        // Fall back to all posts older than 24h if not enough data points.
+        var firstDayPosts = posts.Where(p => p.date.ToUniversalTime() < oneDayAgo
+                                          && p.date.ToUniversalTime() >= DateTime.UtcNow.AddDays(-3)).ToList();
+        if (firstDayPosts.Count < 3)
+            firstDayPosts = [.. posts.Where(p => p.date.ToUniversalTime() < oneDayAgo)];
+
+        avgReachFirstDayPct = firstDayPosts.Count > 0 && subscribers > 0
+            ? firstDayPosts.Average(p => (double)p.views) / subscribers * 100
+            : 0;
+
+        avgForwards  = posts.Average(p => (double)p.forwards);
+        avgComments  = posts.Average(p => (double)(p.replies?.replies ?? 0));
+        avgReactions = posts.Sum(p => p.reactions?.results?.Sum(ReactionCount) ?? 0) / (double)posts.Count;
     }
-    return arr;
+
+    return new JsonObject
+    {
+        ["id"]                      = channel.id,
+        ["username"]                = channel.username,
+        ["title"]                   = channel.title,
+        ["subscribers"]             = subscribers,
+        ["posts_analyzed"]          = posts.Count,
+        ["avg_reach_pct"]           = Math.Round(avgReachPct, 1),
+        ["avg_reach_first_day_pct"] = Math.Round(avgReachFirstDayPct, 1),
+        ["avg_forwards"]            = Math.Round(avgForwards, 1),
+        ["avg_comments"]            = Math.Round(avgComments, 1),
+        ["avg_reactions"]           = Math.Round(avgReactions, 1),
+    };
 }

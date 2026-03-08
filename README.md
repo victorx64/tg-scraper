@@ -1,6 +1,6 @@
 # tg-scraper
 
-CLI tool that searches Telegram channels by query string and scrapes posts + comments to JSON.
+CLI tool that searches Telegram channels by query string and outputs per-channel engagement statistics to JSON.
 
 Uses [WTelegramClient](https://github.com/wiz0u/WTelegramClient) (MTProto API) — real API access, not web scraping.
 
@@ -32,7 +32,7 @@ PHONE=+79001234567
 **First run** — requires interactive TTY to enter the SMS code:
 
 ```bash
-docker compose run --rm -it scraper "machine learning" --channels 2 --posts 5
+docker compose run --rm -it scraper "machine learning" --channels 2 --posts 50
 ```
 
 The scraper will prompt:
@@ -73,15 +73,14 @@ Session file is saved as `tg_scraper.session` in the current directory.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--channels N` | 5 | Max number of channels to scrape |
-| `--posts N` | 50 | Max posts per channel |
-| `--comments N` | 100 | Max comments per post |
+| `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
 | `--output FILE` | `data/results.json` | Output file path |
 
 **Examples:**
 
 ```bash
 docker compose run --rm scraper "machine learning"
-docker compose run --rm scraper "politics" --channels 10 --posts 100 --comments 200
+docker compose run --rm scraper "politics" --channels 10 --posts 500
 docker compose run --rm scraper "tech" --output /data/tech.json
 ```
 
@@ -98,33 +97,29 @@ docker compose run --rm scraper "tech" --output /data/tech.json
       "id": 1234567890,
       "username": "channel_username",
       "title": "Channel Title",
-      "description": "Channel description text",
-      "members_count": 50000,
-      "posts": [
-        {
-          "id": 456,
-          "date": "2026-03-04T08:30:00+00:00",
-          "text": "Post content here",
-          "views": 12000,
-          "forwards": 340,
-          "comments_count": 87,
-          "comments": [
-            {
-              "id": 789,
-              "date": "2026-03-04T09:00:00+00:00",
-              "text": "Comment text",
-              "author": "username_or_null"
-            }
-          ]
-        }
-      ]
+      "subscribers": 50000,
+      "posts_analyzed": 87,
+      "avg_reach_pct": 142.3,
+      "avg_reach_first_day_pct": 118.7,
+      "avg_forwards": 12.4,
+      "avg_comments": 5.1,
+      "avg_reactions": 38.9
     }
   ]
 }
 ```
 
-- Posts with no text (media-only) are skipped
-- Channels without a linked discussion group will have `"comments": []`
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `subscribers` | Total subscriber count |
+| `posts_analyzed` | Number of posts collected within the last 30 days |
+| `avg_reach_pct` | Avg views / subscribers × 100. Can exceed 100% when non-subscribers read the channel via shares or search |
+| `avg_reach_first_day_pct` | Same ratio, but computed only on posts that are 24–72 hours old — a proxy for first-day engagement, since most Telegram views accumulate within the first day |
+| `avg_forwards` | Average number of forwards per post |
+| `avg_comments` | Average number of comments per post |
+| `avg_reactions` | Average total reactions per post |
 
 ---
 
@@ -134,6 +129,4 @@ Never commit `.env` or `*.session` — both contain sensitive credentials. Both 
 
 ## Rate Limits
 
-Telegram enforces flood limits. The scraper handles them automatically:
-- Per channel: sleeps the required time and retries once
-- Per comment batch: sleeps and skips (returns empty comments for that post)
+Telegram enforces flood limits. The scraper handles them automatically with exponential backoff and server-supplied wait times.
