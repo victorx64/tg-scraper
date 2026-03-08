@@ -105,8 +105,8 @@ docker compose run --rm scraper --file /data/channels.txt --output /data/report.
 UTF-8 CSV with a header row, one row per channel:
 
 ```
-id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_reach_first_day_pct,avg_forwards,avg_comments,avg_reactions
-1234567890,channel_username,Channel Title,50000,87,142.3,118.7,12.4,5.1,38.9
+id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions
+1234567890,channel_username,Channel Title,50000,87,142.3,12.4,5.1,38.9
 ```
 
 ### Fields
@@ -116,7 +116,6 @@ id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_reach_first_day_p
 | `subscribers` | Total subscriber count |
 | `posts_analyzed` | Number of posts collected within the last 30 days |
 | `avg_reach_pct` | Avg views / subscribers × 100. Can exceed 100% when non-subscribers read the channel via shares or search |
-| `avg_reach_first_day_pct` | Same ratio, but computed only on posts that are 24–72 hours old — a proxy for first-day engagement, since most Telegram views accumulate within the first day |
 | `avg_forwards` | Average number of forwards per post |
 | `avg_comments` | Average number of comments per post |
 | `avg_reactions` | Average total reactions per post |

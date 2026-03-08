@@ -166,9 +166,9 @@ var outDir = Path.GetDirectoryName(Path.GetFullPath(outputFile));
 if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
 
 var csv = new StringBuilder();
-csv.AppendLine("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_reach_first_day_pct,avg_forwards,avg_comments,avg_reactions");
+csv.AppendLine("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions");
 foreach (var r in rows)
-    csv.AppendLine($"{r.Id},{CsvCell(r.Username ?? "")},{CsvCell(r.Title)},{r.Subscribers},{r.PostsAnalyzed},{r.AvgReachPct},{r.AvgReachFirstDayPct},{r.AvgForwards},{r.AvgComments},{r.AvgReactions}");
+    csv.AppendLine($"{r.Id},{CsvCell(r.Username ?? "")},{CsvCell(r.Title)},{r.Subscribers},{r.PostsAnalyzed},{r.AvgReachPct},{r.AvgForwards},{r.AvgComments},{r.AvgReactions}");
 
 await File.WriteAllTextAsync(outputFile, csv.ToString(), Encoding.UTF8);
 
@@ -209,8 +209,7 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
 
     Log($"  Fetching posts (last 30 days) from @{channel.username ?? channel.id.ToString()}...");
 
-    var cutoff    = DateTime.UtcNow.AddDays(-30);
-    var oneDayAgo = DateTime.UtcNow.AddDays(-1);
+    var cutoff = DateTime.UtcNow.AddDays(-30);
 
     // Collect posts within 30-day window, paginating as needed
     var posts = new List<Message>();
@@ -239,24 +238,12 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
 
     Log($"  Loaded {posts.Count} post(s) for @{channel.username ?? channel.id.ToString()}.");
 
-    double avgReachPct = 0, avgReachFirstDayPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0;
+    double avgReachPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0;
 
     if (posts.Count > 0)
     {
         avgReachPct = subscribers > 0
             ? posts.Average(p => (double)p.views) / subscribers * 100
-            : 0;
-
-        // First-day reach proxy: posts that are 24-72h old have views ≈ day-1 views
-        // (most Telegram views accumulate within the first day).
-        // Fall back to all posts older than 24h if not enough data points.
-        var firstDayPosts = posts.Where(p => p.date.ToUniversalTime() < oneDayAgo
-                                          && p.date.ToUniversalTime() >= DateTime.UtcNow.AddDays(-3)).ToList();
-        if (firstDayPosts.Count < 3)
-            firstDayPosts = [.. posts.Where(p => p.date.ToUniversalTime() < oneDayAgo)];
-
-        avgReachFirstDayPct = firstDayPosts.Count > 0 && subscribers > 0
-            ? firstDayPosts.Average(p => (double)p.views) / subscribers * 100
             : 0;
 
         avgForwards  = posts.Average(p => (double)p.forwards);
@@ -271,7 +258,6 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
         subscribers,
         posts.Count,
         Math.Round(avgReachPct, 1),
-        Math.Round(avgReachFirstDayPct, 1),
         Math.Round(avgForwards, 1),
         Math.Round(avgComments, 1),
         Math.Round(avgReactions, 1));
@@ -279,5 +265,5 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
 
 record ChannelStats(
     long Id, string? Username, string Title, long Subscribers,
-    int PostsAnalyzed, double AvgReachPct, double AvgReachFirstDayPct,
+    int PostsAnalyzed, double AvgReachPct,
     double AvgForwards, double AvgComments, double AvgReactions);
