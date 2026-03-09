@@ -290,6 +290,13 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         {
             if (msg.date.ToUniversalTime() < cutoff) { reachedCutoff = true; break; }
             posts.Add(msg);
+            // int reactions = msg.reactions?.results?.Sum(ReactionCount) ?? 0;
+            // double reachPct = subscribers > 0 ? (double)msg.views / subscribers * 100 : 0;
+            // double engPct = msg.views > 0
+            //     ? (msg.forwards + (msg.replies?.replies ?? 0) + reactions) / (double)msg.views * 100
+            //     : 0;
+            // Console.Error.WriteLine(
+            //     $"  [post {msg.id}] date={msg.date:yyyy-MM-dd} views={msg.views} fwd={msg.forwards} comments={msg.replies?.replies ?? 0} reactions={reactions} reach={reachPct:F1}% eng={engPct:F2}%");
         }
 
         if (reachedCutoff || posts.Count >= maxPosts) break;
