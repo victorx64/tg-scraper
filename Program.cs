@@ -150,7 +150,7 @@ Log($"To process: {toProcess.Count} channel(s). Concurrency: {concurrency}.");
 var csvLock = new SemaphoreSlim(1, 1);
 var csvWriter = new StreamWriter(outputFile, append: csvExists, encoding: Encoding.UTF8) { AutoFlush = true };
 if (!csvExists)
-    await csvWriter.WriteLineAsync("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions,avg_engagement_rate_pct");
+    await csvWriter.WriteLineAsync("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_engagement_rate_pct");
 
 int processed = 0;
 int failed    = 0;
@@ -182,7 +182,7 @@ await Parallel.ForEachAsync(toProcess,
             try
             {
                 await csvWriter.WriteLineAsync(
-                    $"{stats.Id},{CsvCell(stats.Username ?? "")},{CsvCell(stats.Title)},{stats.Subscribers},{stats.PostsAnalyzed},{stats.AvgReachPct},{stats.AvgForwards},{stats.AvgComments},{stats.AvgReactions},{stats.AvgEngagementRatePct}");
+                    $"{stats.Id},{CsvCell(stats.Username ?? "")},{CsvCell(stats.Title)},{stats.Subscribers},{stats.PostsAnalyzed},{stats.AvgReachPct},{stats.AvgEngagementRatePct}");
             }
             finally { csvLock.Release(); }
 
@@ -297,16 +297,13 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         await Task.Delay(throttle);
     }
 
-    double avgReachPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0, avgEngagementRatePct = 0;
+    double avgReachPct = 0, avgEngagementRatePct = 0;
 
     if (posts.Count > 0)
     {
         avgReachPct  = subscribers > 0
             ? posts.Average(p => (double)p.views) / subscribers * 100
             : 0;
-        avgForwards  = posts.Average(p => (double)p.forwards);
-        avgComments  = posts.Average(p => (double)(p.replies?.replies ?? 0));
-        avgReactions = posts.Sum(p => p.reactions?.results?.Sum(ReactionCount) ?? 0) / (double)posts.Count;
         avgEngagementRatePct = posts.Average(p =>
         {
             double views = p.views;
@@ -325,13 +322,10 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         subscribers,
         posts.Count,
         Math.Round(avgReachPct, 1),
-        Math.Round(avgForwards, 1),
-        Math.Round(avgComments, 1),
-        Math.Round(avgReactions, 1),
         Math.Round(avgEngagementRatePct, 2));
 }
 
 record ChannelStats(
     long Id, string? Username, string Title, long Subscribers,
     int PostsAnalyzed, double AvgReachPct,
-    double AvgForwards, double AvgComments, double AvgReactions, double AvgEngagementRatePct);
+    double AvgEngagementRatePct);
