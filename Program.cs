@@ -150,7 +150,7 @@ Log($"To process: {toProcess.Count} channel(s). Concurrency: {concurrency}.");
 var csvLock = new SemaphoreSlim(1, 1);
 var csvWriter = new StreamWriter(outputFile, append: csvExists, encoding: Encoding.UTF8) { AutoFlush = true };
 if (!csvExists)
-    await csvWriter.WriteLineAsync("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions");
+    await csvWriter.WriteLineAsync("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions,avg_engagement_rate_pct");
 
 int processed = 0;
 int failed    = 0;
@@ -182,7 +182,7 @@ await Parallel.ForEachAsync(toProcess,
             try
             {
                 await csvWriter.WriteLineAsync(
-                    $"{stats.Id},{CsvCell(stats.Username ?? "")},{CsvCell(stats.Title)},{stats.Subscribers},{stats.PostsAnalyzed},{stats.AvgReachPct},{stats.AvgForwards},{stats.AvgComments},{stats.AvgReactions}");
+                    $"{stats.Id},{CsvCell(stats.Username ?? "")},{CsvCell(stats.Title)},{stats.Subscribers},{stats.PostsAnalyzed},{stats.AvgReachPct},{stats.AvgForwards},{stats.AvgComments},{stats.AvgReactions},{stats.AvgEngagementRatePct}");
             }
             finally { csvLock.Release(); }
 
@@ -198,9 +198,52 @@ await Parallel.ForEachAsync(toProcess,
 
 await csvWriter.DisposeAsync();
 Log($"Done. {processed} succeeded, {failed} failed. Results: {outputFile}");
+
+var xlsxFile = Path.ChangeExtension(outputFile, ".xlsx");
+ConvertCsvToXlsx(outputFile, xlsxFile);
+Log($"Excel: {xlsxFile}");
 return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+static void ConvertCsvToXlsx(string csvPath, string xlsxPath)
+{
+    using var wb = new ClosedXML.Excel.XLWorkbook();
+    var ws = wb.AddWorksheet("Results");
+    var lines = File.ReadAllLines(csvPath);
+    for (int row = 0; row < lines.Length; row++)
+    {
+        var cols = ParseCsvLine(lines[row]);
+        for (int col = 0; col < cols.Count; col++)
+            ws.Cell(row + 1, col + 1).Value = cols[col];
+    }
+    wb.SaveAs(xlsxPath);
+}
+
+static List<string> ParseCsvLine(string line)
+{
+    var fields = new List<string>();
+    var sb = new StringBuilder();
+    bool inQuotes = false;
+    for (int i = 0; i < line.Length; i++)
+    {
+        char c = line[i];
+        if (inQuotes)
+        {
+            if (c == '"' && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+            else if (c == '"') inQuotes = false;
+            else sb.Append(c);
+        }
+        else
+        {
+            if (c == '"') inQuotes = true;
+            else if (c == ',') { fields.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(c);
+        }
+    }
+    fields.Add(sb.ToString());
+    return fields;
+}
 
 static string? ParseUsername(string line)
 {
@@ -254,7 +297,7 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         await Task.Delay(throttle);
     }
 
-    double avgReachPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0;
+    double avgReachPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0, avgEngagementRatePct = 0;
 
     if (posts.Count > 0)
     {
@@ -264,6 +307,15 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         avgForwards  = posts.Average(p => (double)p.forwards);
         avgComments  = posts.Average(p => (double)(p.replies?.replies ?? 0));
         avgReactions = posts.Sum(p => p.reactions?.results?.Sum(ReactionCount) ?? 0) / (double)posts.Count;
+        avgEngagementRatePct = posts.Average(p =>
+        {
+            double views = p.views;
+            if (views <= 0) return 0;
+            double activities = p.forwards
+                + (p.replies?.replies ?? 0)
+                + (p.reactions?.results?.Sum(ReactionCount) ?? 0);
+            return activities / views * 100;
+        });
     }
 
     return new ChannelStats(
@@ -275,10 +327,11 @@ static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel
         Math.Round(avgReachPct, 1),
         Math.Round(avgForwards, 1),
         Math.Round(avgComments, 1),
-        Math.Round(avgReactions, 1));
+        Math.Round(avgReactions, 1),
+        Math.Round(avgEngagementRatePct, 2));
 }
 
 record ChannelStats(
     long Id, string? Username, string Title, long Subscribers,
     int PostsAnalyzed, double AvgReachPct,
-    double AvgForwards, double AvgComments, double AvgReactions);
+    double AvgForwards, double AvgComments, double AvgReactions, double AvgEngagementRatePct);
