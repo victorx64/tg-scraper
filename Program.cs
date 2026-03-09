@@ -23,7 +23,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help")
 
 string? channelsFile = null;
 int maxPosts         = 200;
-int concurrency      = 5;
+int concurrency      = 2;
 string outputFile    = Path.Combine(dataDir, "results.csv");
 
 for (int i = 0; i < args.Length; i++)
@@ -72,7 +72,7 @@ static int ParseFloodWait(string message)
 }
 
 // Delay between API requests to avoid rate-limit bans
-TimeSpan ApiThrottle = TimeSpan.FromMilliseconds(300);
+TimeSpan ApiThrottle = TimeSpan.FromMilliseconds(500);
 
 // Retry with exponential backoff; FloodWait uses server-supplied delay.
 static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAttempts = 3,
@@ -155,11 +155,11 @@ if (!csvExists)
 int processed = 0;
 int failed    = 0;
 
-// ── Phase 1: Resolve usernames in parallel ────────────────────────────────────
-var resolvedChannels = new System.Collections.Concurrent.ConcurrentBag<Channel>();
+// ── Resolve + fetch stats in parallel ────────────────────────────────────────
+int total = toProcess.Count;
 
 await Parallel.ForEachAsync(toProcess,
-    new ParallelOptions { MaxDegreeOfParallelism = concurrency * 2 }, // resolve is cheap
+    new ParallelOptions { MaxDegreeOfParallelism = concurrency },
     async (username, _) =>
     {
         try
@@ -168,33 +168,12 @@ await Parallel.ForEachAsync(toProcess,
             var resolved = await RetryAsync(
                 () => client.Contacts_ResolveUsername(username),
                 $"Resolve:{username}");
-            if (resolved.Chat is Channel ch)
-            {
-                resolvedChannels.Add(ch);
-                Log($"  Resolved @{username} → {ch.title}");
-            }
-            else
+            if (resolved.Chat is not Channel channel)
             {
                 Log($"  @{username} is not a channel, skipping.");
+                return;
             }
-        }
-        catch (Exception ex)
-        {
-            Log($"  Failed to resolve @{username}: {ex.Message}");
-        }
-    });
 
-Log($"Resolved {resolvedChannels.Count} channel(s). Starting stats collection...");
-
-// ── Phase 2: Fetch stats in parallel ─────────────────────────────────────────
-int total = resolvedChannels.Count;
-
-await Parallel.ForEachAsync(resolvedChannels,
-    new ParallelOptions { MaxDegreeOfParallelism = concurrency },
-    async (channel, _) =>
-    {
-        try
-        {
             var stats = await RetryAsync(
                 () => FetchChannelStats(client, channel, maxPosts, ApiThrottle),
                 $"channel:{channel.title}");
@@ -213,7 +192,7 @@ await Parallel.ForEachAsync(resolvedChannels,
         catch (Exception ex)
         {
             int n = Interlocked.Increment(ref failed);
-            Log($"  [{channel.title}] Failed: {ex.GetType().Name}: {ex.Message}  (total failed: {n})");
+            Log($"  [@{username}] Failed: {ex.GetType().Name}: {ex.Message}  (total failed: {n})");
         }
     });
 
