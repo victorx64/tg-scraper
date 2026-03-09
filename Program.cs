@@ -83,6 +83,10 @@ static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAtte
         {
             return await action();
         }
+        catch (RpcException ex) when (ex.Message.Contains("USERNAME_NOT_OCCUPIED"))
+        {
+            throw; // non-retryable
+        }
         catch (RpcException ex) when (ex.Code == 420)
         {
             int secs = ParseFloodWait(ex.Message);
