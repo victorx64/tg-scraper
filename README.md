@@ -89,6 +89,7 @@ Session file is saved as `tg_scraper.session` in the current directory.
 | `--file FILE` | *(required)* | Path to file with channel links (one per line) |
 | `--posts N` | 200 | Max posts to analyse per channel (within 30-day window) |
 | `--output FILE` | `data/results.csv` | Output file path |
+| `--concurrency N` | 5 | Number of channels processed in parallel |
 
 **Examples:**
 
@@ -96,6 +97,7 @@ Session file is saved as `tg_scraper.session` in the current directory.
 docker compose run --rm scraper --file /data/channels.txt
 docker compose run --rm scraper --file /data/channels.txt --posts 500
 docker compose run --rm scraper --file /data/channels.txt --output /data/report.csv
+docker compose run --rm scraper --file /data/channels.txt --concurrency 8
 ```
 
 ---
@@ -126,6 +128,14 @@ id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comm
 
 Never commit `.env` or `*.session` — both contain sensitive credentials. Both are listed in `.gitignore`.
 
+## Large-scale usage
+
+For thousands of channels, the scraper runs channels in parallel (default 5 workers) and resolves usernames in parallel (up to 10 workers). Results are written to CSV immediately as each channel completes — a crash or interruption does not lose already-collected data.
+
+**Resuming an interrupted run:** simply re-run with the same `--output` file. Channels already present in the CSV are skipped automatically.
+
+**Tuning concurrency:** start with the default (`--concurrency 5`). If you see frequent FloodWait errors, reduce to 3. If runs are clean, you can try 8–10.
+
 ## Rate Limits
 
-Telegram enforces flood limits. The scraper handles them automatically with exponential backoff and server-supplied wait times.
+Telegram enforces flood limits. The scraper handles them automatically with exponential backoff and server-supplied wait times. A 300 ms delay is injected between every API call per worker.

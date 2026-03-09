@@ -16,22 +16,24 @@ var dataDir = Environment.GetEnvironmentVariable("DATA_DIR") ?? ".";
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.Error.WriteLine("Usage: scraper --file CHANNELS_FILE [--posts N] [--output FILE]");
+    Console.Error.WriteLine("Usage: scraper --file CHANNELS_FILE [--posts N] [--output FILE] [--concurrency N]");
     Console.Error.WriteLine("  CHANNELS_FILE: one channel link per line (t.me/x, @x, or x)");
     return 1;
 }
 
 string? channelsFile = null;
 int maxPosts         = 200;
+int concurrency      = 5;
 string outputFile    = Path.Combine(dataDir, "results.csv");
 
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
     {
-        case "--file":   channelsFile = args[++i]; break;
-        case "--posts":  maxPosts     = int.Parse(args[++i]); break;
-        case "--output": outputFile   = args[++i]; break;
+        case "--file":        channelsFile = args[++i]; break;
+        case "--posts":       maxPosts     = int.Parse(args[++i]); break;
+        case "--output":      outputFile   = args[++i]; break;
+        case "--concurrency": concurrency  = int.Parse(args[++i]); break;
     }
 }
 
@@ -70,10 +72,9 @@ static int ParseFloodWait(string message)
 }
 
 // Delay between API requests to avoid rate-limit bans
-TimeSpan ApiThrottle = TimeSpan.FromMilliseconds(500);
+TimeSpan ApiThrottle = TimeSpan.FromMilliseconds(300);
 
 // Retry with exponential backoff; FloodWait uses server-supplied delay.
-// shouldRetry: return false to let the exception propagate immediately without retrying.
 static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAttempts = 3,
     Func<Exception, bool>? shouldRetry = null)
 {
@@ -84,6 +85,10 @@ static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAtte
             return await action();
         }
         catch (RpcException ex) when (ex.Message.Contains("USERNAME_NOT_OCCUPIED"))
+        {
+            throw; // non-retryable
+        }
+        catch (RpcException ex) when (ex.Message.Contains("USERNAME_INVALID"))
         {
             throw; // non-retryable
         }
@@ -118,78 +123,112 @@ string? Config(string what) => what switch
 using var client = new Client(Config);
 await client.LoginUserIfNeeded();
 
-Log($"Authenticated. Resolving {channelUsernames.Count} channel(s) from {channelsFile}...");
+Log($"Authenticated. {channelUsernames.Count} channel(s) from {channelsFile}.");
 
-var channels = new List<Channel>();
-foreach (var username in channelUsernames)
-{
-    try
-    {
-        await Task.Delay(ApiThrottle);
-        var resolved = await RetryAsync(
-            () => client.Contacts_ResolveUsername(username),
-            $"ResolveUsername:{username}");
-        if (resolved.Chat is Channel ch)
-        {
-            channels.Add(ch);
-            Log($"  Resolved @{username} → {ch.title}");
-        }
-        else
-        {
-            Log($"  @{username} is not a channel, skipping.");
-        }
-    }
-    catch (Exception ex)
-    {
-        Log($"  Failed to resolve @{username}: {ex.Message}");
-    }
-}
-
-Log($"Resolved {channels.Count} channel(s).");
-
-var rows = new List<ChannelStats>();
-
-for (int i = 0; i < channels.Count; i++)
-{
-    var channel = channels[i];
-    Log($"[{i + 1}/{channels.Count}] Scraping: {channel.title}");
-    if (i > 0) await Task.Delay(ApiThrottle);
-    try
-    {
-        rows.Add(await RetryAsync(
-            () => FetchChannelStats(client, channel, maxPosts),
-            $"channel:{channel.title}"));
-    }
-    catch (Exception ex)
-    {
-        Log($"  [{channel.title}] Failed after retries: {ex.GetType().Name}: {ex.Message}");
-    }
-}
-
+// ── Resume: load already-processed usernames from existing CSV ────────────────
 var outDir = Path.GetDirectoryName(Path.GetFullPath(outputFile));
 if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
 
-var csv = new StringBuilder();
-csv.AppendLine("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions");
-foreach (var r in rows)
-    csv.AppendLine($"{r.Id},{CsvCell(r.Username ?? "")},{CsvCell(r.Title)},{r.Subscribers},{r.PostsAnalyzed},{r.AvgReachPct},{r.AvgForwards},{r.AvgComments},{r.AvgReactions}");
+var alreadyDone = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+bool csvExists = File.Exists(outputFile);
+if (csvExists)
+{
+    var existingLines = await File.ReadAllLinesAsync(outputFile);
+    foreach (var line in existingLines.Skip(1)) // skip header
+    {
+        var cols = line.Split(',');
+        if (cols.Length >= 2 && !string.IsNullOrWhiteSpace(cols[1]))
+            alreadyDone.Add(cols[1].Trim('"'));
+    }
+    Log($"Resume: {alreadyDone.Count} channel(s) already in output, skipping them.");
+}
 
-await File.WriteAllTextAsync(outputFile, csv.ToString(), Encoding.UTF8);
+var toProcess = channelUsernames.Where(u => !alreadyDone.Contains(u)).ToList();
+Log($"To process: {toProcess.Count} channel(s). Concurrency: {concurrency}.");
 
-Log($"Done. Results written to {outputFile}");
+// ── CSV writer (append-safe, thread-safe) ─────────────────────────────────────
+var csvLock = new SemaphoreSlim(1, 1);
+var csvWriter = new StreamWriter(outputFile, append: csvExists, encoding: Encoding.UTF8) { AutoFlush = true };
+if (!csvExists)
+    await csvWriter.WriteLineAsync("id,username,title,subscribers,posts_analyzed,avg_reach_pct,avg_forwards,avg_comments,avg_reactions");
+
+int processed = 0;
+int failed    = 0;
+
+// ── Phase 1: Resolve usernames in parallel ────────────────────────────────────
+var resolvedChannels = new System.Collections.Concurrent.ConcurrentBag<Channel>();
+
+await Parallel.ForEachAsync(toProcess,
+    new ParallelOptions { MaxDegreeOfParallelism = concurrency * 2 }, // resolve is cheap
+    async (username, _) =>
+    {
+        try
+        {
+            await Task.Delay(ApiThrottle, _);
+            var resolved = await RetryAsync(
+                () => client.Contacts_ResolveUsername(username),
+                $"Resolve:{username}");
+            if (resolved.Chat is Channel ch)
+            {
+                resolvedChannels.Add(ch);
+                Log($"  Resolved @{username} → {ch.title}");
+            }
+            else
+            {
+                Log($"  @{username} is not a channel, skipping.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"  Failed to resolve @{username}: {ex.Message}");
+        }
+    });
+
+Log($"Resolved {resolvedChannels.Count} channel(s). Starting stats collection...");
+
+// ── Phase 2: Fetch stats in parallel ─────────────────────────────────────────
+int total = resolvedChannels.Count;
+
+await Parallel.ForEachAsync(resolvedChannels,
+    new ParallelOptions { MaxDegreeOfParallelism = concurrency },
+    async (channel, _) =>
+    {
+        try
+        {
+            var stats = await RetryAsync(
+                () => FetchChannelStats(client, channel, maxPosts, ApiThrottle),
+                $"channel:{channel.title}");
+
+            await csvLock.WaitAsync(_);
+            try
+            {
+                await csvWriter.WriteLineAsync(
+                    $"{stats.Id},{CsvCell(stats.Username ?? "")},{CsvCell(stats.Title)},{stats.Subscribers},{stats.PostsAnalyzed},{stats.AvgReachPct},{stats.AvgForwards},{stats.AvgComments},{stats.AvgReactions}");
+            }
+            finally { csvLock.Release(); }
+
+            int n = Interlocked.Increment(ref processed);
+            Log($"[{n}/{total}] Done: {channel.title}");
+        }
+        catch (Exception ex)
+        {
+            int n = Interlocked.Increment(ref failed);
+            Log($"  [{channel.title}] Failed: {ex.GetType().Name}: {ex.Message}  (total failed: {n})");
+        }
+    });
+
+await csvWriter.DisposeAsync();
+Log($"Done. {processed} succeeded, {failed} failed. Results: {outputFile}");
 return 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// Extracts username from t.me/x, https://t.me/x, @x, or plain x
 static string? ParseUsername(string line)
 {
-    // Strip URL prefix
     var s = line;
     if (s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) s = s["https://".Length..];
     if (s.StartsWith("http://",  StringComparison.OrdinalIgnoreCase)) s = s["http://".Length..];
     if (s.StartsWith("t.me/",    StringComparison.OrdinalIgnoreCase)) s = s["t.me/".Length..];
-    // Strip leading @
     s = s.TrimStart('@').Trim();
     return string.IsNullOrEmpty(s) ? null : s;
 }
@@ -201,7 +240,7 @@ static string CsvCell(string value) =>
 
 static int ReactionCount(ReactionCount r) => r.count;
 
-async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int maxPosts)
+static async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int maxPosts, TimeSpan throttle)
 {
     var fullInfo = await RetryAsync(
         () => client.Channels_GetFullChannel(channel),
@@ -209,13 +248,9 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
     var fullChat = (ChannelFull)fullInfo.full_chat;
     long subscribers = fullChat.participants_count;
 
-    await Task.Delay(ApiThrottle);
-
-    Log($"  Fetching posts (last 30 days) from @{channel.username ?? channel.id.ToString()}...");
+    await Task.Delay(throttle);
 
     var cutoff = DateTime.UtcNow.AddDays(-30);
-
-    // Collect posts within 30-day window, paginating as needed
     var posts = new List<Message>();
     int offsetId = 0;
 
@@ -237,19 +272,16 @@ async Task<ChannelStats> FetchChannelStats(Client client, Channel channel, int m
 
         if (reachedCutoff || posts.Count >= maxPosts) break;
         offsetId = msgs[^1].id;
-        await Task.Delay(ApiThrottle);
+        await Task.Delay(throttle);
     }
-
-    Log($"  Loaded {posts.Count} post(s) for @{channel.username ?? channel.id.ToString()}.");
 
     double avgReachPct = 0, avgForwards = 0, avgComments = 0, avgReactions = 0;
 
     if (posts.Count > 0)
     {
-        avgReachPct = subscribers > 0
+        avgReachPct  = subscribers > 0
             ? posts.Average(p => (double)p.views) / subscribers * 100
             : 0;
-
         avgForwards  = posts.Average(p => (double)p.forwards);
         avgComments  = posts.Average(p => (double)(p.replies?.replies ?? 0));
         avgReactions = posts.Sum(p => p.reactions?.results?.Sum(ReactionCount) ?? 0) / (double)posts.Count;
