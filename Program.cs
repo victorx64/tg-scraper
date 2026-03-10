@@ -94,7 +94,7 @@ static async Task<T> RetryAsync<T>(Func<Task<T>> action, string ctx, int maxAtte
         }
         catch (RpcException ex) when (ex.Code == 420)
         {
-            int secs = ParseFloodWait(ex.Message);
+            int secs = ex.X > 0 ? ex.X : 30;
             Log($"[{ctx}] FloodWait: sleeping {secs}s (attempt {attempt}/{maxAttempts})");
             if (attempt >= maxAttempts) throw;
             await Task.Delay(secs * 1000);
